@@ -65,8 +65,7 @@ services:
       - patroni1_data:/var/lib/postgresql/data
       - patroni1_logs:/var/log/patroni
     depends_on:
-      etcd1:
-        condition: service_healthy
+      - etcd1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
