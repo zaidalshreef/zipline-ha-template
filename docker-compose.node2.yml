@@ -1,0 +1,128 @@
+# Fresh Zipline HA Cluster - Node 2 (10.10.10.105)
+# Following Medium article approach with etcd configuration files
+# ===============================================================
+
+services:
+  # etcd Node 2 with configuration file
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.17
+    container_name: zipline-etcd2-fresh
+    hostname: zipline-etcd2-fresh
+    network_mode: host
+    environment:
+      ETCD_NAME: etcd2
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: http://10.10.10.105:2379
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://10.10.10.105:2380
+      ETCD_INITIAL_CLUSTER: etcd1=http://10.10.10.150:2380,etcd2=http://10.10.10.105:2380
+      ETCD_INITIAL_CLUSTER_STATE: existing
+      ETCD_INITIAL_CLUSTER_TOKEN: zipline-etcd-cluster
+    volumes:
+      - etcd2_data:/etcd-data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # PostgreSQL with Patroni - Replica Node
+  patroni-node2:
+    build:
+      context: .
+      dockerfile: Dockerfile.patroni-postgres
+    image: zipline-patroni-postgres:latest
+    container_name: zipline-patroni-node2-fresh
+    hostname: zipline-patroni-node2-fresh
+    network_mode: host
+    environment:
+      # Patroni configuration
+      PATRONI_SCOPE: zipline-ha-cluster
+      PATRONI_NAME: patroni-node2
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8009
+      PATRONI_RESTAPI_CONNECT_ADDRESS: 10.10.10.105:8009
+      PATRONI_ETCD3_HOSTS: 10.10.10.150:2379,10.10.10.105:2379
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: 10.10.10.105:5432
+      PATRONI_POSTGRESQL_DATA_DIR: /var/lib/postgresql/data
+      PATRONI_POSTGRESQL_BIN_DIR: /usr/local/bin
+      PATRONI_LOG_LEVEL: INFO
+      
+      # PostgreSQL configuration
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_super_2025
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator_pass_2025
+      
+      # Zipline user password
+      ZIPLINE_PASSWORD: zipline_secure_2025
+    volumes:
+      - patroni2_data:/var/lib/postgresql/data
+      - patroni2_logs:/var/log/patroni
+    depends_on:
+      etcd2:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # HAProxy Load Balancer (Backup)
+  haproxy:
+    image: haproxy:3.0-alpine
+    container_name: zipline-haproxy-node2-fresh
+    hostname: zipline-haproxy-node2-fresh
+    network_mode: host
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - patroni-node2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8404"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Zipline Application (Backup)
+  zipline:
+    image: ghcr.io/diced/zipline:latest
+    container_name: zipline-app-node2-fresh
+    hostname: zipline-app-node2-fresh
+    network_mode: host
+    environment:
+      # Connect via HAProxy for automatic failover
+      DATABASE_URL: postgres://zipline:zipline_secure_2025@localhost:5000/zipline?schema=public
+      CORE_SECRET: MySecureZiplineSecretFor2NodeFreshCluster2025IsVeryLong
+      CORE_RETURN_HTTPS: "false"
+      CORE_COMPRESSION_ENABLED: "true"
+      CORE_COMPRESSION_THRESHOLD: 200mb
+      CORE_COMPRESSION_ON_DASHBOARD: "true"
+    depends_on:
+      - haproxy
+    volumes:
+      - './zipline/data/uploads:/zipline/uploads'
+      - './zipline/data/public:/zipline/public'
+      - './zipline/data/themes:/zipline/themes'
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:3000/api/healthcheck']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  etcd2_data:
+    name: zipline_etcd2_fresh_data
+  patroni2_data:
+    name: zipline_patroni2_fresh_data
+  patroni2_logs:
+    name: zipline_patroni2_fresh_logs

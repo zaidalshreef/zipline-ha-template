@@ -1,0 +1,135 @@
+# Patroni Configuration Template for Zipline HA Cluster
+# Will be customized per node by setup script
+# ==================================================
+
+scope: ${PATRONI_SCOPE}
+name: ${PATRONI_NAME}
+namespace: /service/
+
+restapi:
+  listen: ${PATRONI_RESTAPI_LISTEN}
+  connect_address: ${PATRONI_RESTAPI_CONNECT_ADDRESS}
+
+etcd3:
+  hosts: ${PATRONI_ETCD3_HOSTS}
+  protocol: http
+
+bootstrap:
+  method: initdb
+  
+  # Initialize database with proper settings for Zipline
+  initdb:
+    - data-checksums
+    - encoding: UTF8
+    - locale: C
+  
+  # Create users for Zipline compatibility
+  users:
+    postgres:
+      password: ${POSTGRES_PASSWORD}
+      options:
+        - superuser
+    
+    replicator:
+      password: ${POSTGRES_REPLICATION_PASSWORD}
+      options:
+        - replication
+    
+    zipline:
+      password: ${ZIPLINE_PASSWORD}
+      options:
+        - superuser  # Zipline needs superuser for migrations
+  
+  # Post-init script to set up Zipline database
+  post_init: |
+    # Create Zipline database
+    CREATE DATABASE zipline WITH OWNER zipline;
+    
+    # Connect to zipline database and set up permissions
+    \c zipline
+    GRANT ALL ON SCHEMA public TO zipline;
+    ALTER SCHEMA public OWNER TO zipline;
+    
+    # Create required extensions
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    
+    # Set default privileges for future objects
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO zipline;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO zipline;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO zipline;
+
+  # DCS configuration for automatic failover
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 60
+    maximum_lag_on_failover: 1048576
+    
+    postgresql:
+      use_pg_rewind: true
+      
+      parameters:
+        # Connection settings
+        max_connections: 100
+        
+        # Memory settings
+        shared_buffers: 256MB
+        effective_cache_size: 1GB
+        
+        # WAL settings for replication
+        wal_level: replica
+        wal_keep_size: 128MB
+        max_wal_senders: 10
+        max_replication_slots: 10
+        
+        # Standby settings
+        hot_standby: 'on'
+        hot_standby_feedback: 'on'
+        
+        # Performance tuning
+        checkpoint_completion_target: 0.9
+        wal_buffers: 16MB
+        
+        # Enable synchronous replication for consistency
+        synchronous_commit: 'on'
+        
+      # Host-based authentication for Zipline
+      pg_hba:
+        - local all all trust
+        - host all all 127.0.0.1/32 trust
+        - host all all ::1/128 trust
+        - host all all 0.0.0.0/0 md5
+        - host replication replicator 0.0.0.0/0 md5
+        - host all zipline 0.0.0.0/0 md5
+
+postgresql:
+  listen: ${PATRONI_POSTGRESQL_LISTEN}
+  connect_address: ${PATRONI_POSTGRESQL_CONNECT_ADDRESS}
+  
+  data_dir: ${PATRONI_POSTGRESQL_DATA_DIR}
+  bin_dir: ${PATRONI_POSTGRESQL_BIN_DIR}
+  
+  authentication:
+    superuser:
+      username: postgres
+      password: ${POSTGRES_PASSWORD}
+    
+    replication:
+      username: replicator
+      password: ${POSTGRES_REPLICATION_PASSWORD}
+
+# Logging configuration
+log:
+  level: ${PATRONI_LOG_LEVEL}
+
+# Watchdog (optional, for split-brain protection)
+watchdog:
+  mode: off  # Can be enabled with hardware watchdog
+
+# Tags for this node
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

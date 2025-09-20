@@ -1,0 +1,86 @@
+# Custom PostgreSQL + Patroni Image for Zipline HA Cluster
+# Based on postgres:16-alpine with Patroni for automatic failover
+# ===============================================================
+
+FROM postgres:16-alpine
+
+# Install system dependencies
+RUN apk add --no-cache \
+    python3 \
+    python3-dev \
+    py3-pip \
+    gcc \
+    musl-dev \
+    libffi-dev \
+    openssl-dev \
+    curl \
+    wget \
+    bash \
+    netcat-openbsd \
+    jq \
+    gettext
+
+# Create patroni user and directories
+RUN adduser -D -s /bin/bash patroni && \
+    mkdir -p /var/lib/patroni /var/log/patroni /etc/patroni && \
+    chown -R patroni:patroni /var/lib/patroni /var/log/patroni
+
+# Install Patroni and dependencies
+RUN pip3 install --break-system-packages --no-cache-dir \
+    patroni[etcd3] \
+    psycopg2-binary \
+    python-etcd
+
+# Copy configuration files
+COPY postgresql-patroni.conf /etc/postgresql/postgresql.conf
+COPY pg_hba.conf /etc/postgresql/pg_hba.conf
+COPY init-zipline-cluster.sql /docker-entrypoint-initdb.d/02-init-zipline.sql
+
+# Copy Patroni configuration template
+COPY patroni-config-template.yml /etc/patroni/patroni-template.yml
+
+# Copy custom entrypoint and scripts
+COPY entrypoint-patroni.sh /usr/local/bin/entrypoint-patroni.sh
+COPY setup-patroni-config.sh /usr/local/bin/setup-patroni-config.sh
+
+# Set permissions
+RUN chmod +x /usr/local/bin/entrypoint-patroni.sh \
+    && chmod +x /usr/local/bin/setup-patroni-config.sh \
+    && chmod 644 /etc/postgresql/postgresql.conf \
+    && chmod 644 /etc/postgresql/pg_hba.conf \
+    && chmod 644 /docker-entrypoint-initdb.d/*.sql \
+    && chmod 644 /etc/patroni/patroni-template.yml
+
+# Default environment variables
+ENV POSTGRES_USER=postgres \
+    POSTGRES_PASSWORD=postgres_super_2025 \
+    POSTGRES_DB=postgres \
+    POSTGRES_INITDB_ARGS="--encoding=UTF8 --locale=C" \
+    POSTGRES_REPLICATION_USER=replicator \
+    POSTGRES_REPLICATION_PASSWORD=replicator_pass_2025 \
+    PATRONI_SCOPE=zipline-ha-cluster \
+    PATRONI_NAME="" \
+    PATRONI_RESTAPI_LISTEN=0.0.0.0:8008 \
+    PATRONI_RESTAPI_CONNECT_ADDRESS="" \
+    PATRONI_ETCD3_HOSTS="" \
+    PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432 \
+    PATRONI_POSTGRESQL_CONNECT_ADDRESS="" \
+    PATRONI_POSTGRESQL_DATA_DIR=/var/lib/postgresql/data \
+    PATRONI_POSTGRESQL_BIN_DIR=/usr/local/bin \
+    PATRONI_LOG_LEVEL=INFO
+
+# Use custom entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint-patroni.sh"]
+CMD ["patroni", "/etc/patroni/patroni.yml"]
+
+# Health check using Patroni API
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=60s \
+    CMD curl -f http://localhost:8008/health || exit 1
+
+# Expose ports
+EXPOSE 5432 8008
+
+# Labels
+LABEL org.label-schema.name="PostgreSQL + Patroni for Zipline HA" \
+    org.label-schema.description="Custom PostgreSQL with Patroni for automatic failover" \
+    org.label-schema.version="16-alpine-patroni"
